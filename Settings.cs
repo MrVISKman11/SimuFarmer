@@ -51,8 +51,8 @@ namespace SimuFarmer
         [Menu("Hideout & Stashing", 300)]
         public EmptyNode StashHeader { get; set; } = new();
 
-        [Menu("Use Ctrl+Shift Click to Dump", "Uses Ctrl+Shift+Click instead of Ctrl+Click to bypass full/affinity tabs", 301, 300)]
-        public ToggleNode UseCtrlShiftDump { get; set; } = new(true);
+        [Menu("Use Ctrl+Shift Click to Dump", "Uses Ctrl+Shift+Click instead of standard Ctrl+Click (leave OFF for standard dump)", 301, 300)]
+        public ToggleNode UseCtrlShiftDump { get; set; } = new(false);
 
         [Menu("Dump Stash Tab Index", "0-based index of your dump tab (0 is first tab)", 302, 300)]
         public RangeNode<int> StashTabIndex { get; set; } = new(0, 0, 50);

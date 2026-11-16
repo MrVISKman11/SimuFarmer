@@ -127,21 +127,15 @@ namespace SimuFarmer
                 }
             }
 
-            // Sync wave state directly from monolith StateMachine
+            // Sync wave state directly from monolith StateMachine (read-only wave number sync)
             if (_arenaManager.IsInSimulacrumArea && _arenaManager.MonolithEntity != null && _arenaManager.MonolithEntity.IsValid)
             {
                 if (_arenaManager.MonolithEntity.TryGetComponent<ExileCore.PoEMemory.Components.StateMachine>(out var sm))
                 {
-                    var active = sm.States.FirstOrDefault(s => s.Name == "active")?.Value ?? 0;
                     var wave = (int)(sm.States.FirstOrDefault(s => s.Name == "wave")?.Value ?? 0);
                     if (wave > 0)
                     {
                         _state.CurrentWave = wave;
-                    }
-
-                    if (active > 0 && (_state.Phase == SimPhase.StartingWave || _state.Phase == SimPhase.ArenaInit))
-                    {
-                        _combatWaveRunner.OnWaveStarted(GameController, _state, wave);
                     }
                 }
             }
@@ -345,107 +339,122 @@ namespace SimuFarmer
 
             ImGui.SetNextWindowSize(new Vector2(380, 420), ImGuiCond.FirstUseEver);
             bool isOpen = Settings.ShowHud.Value;
-            if (ImGui.Begin("SimuFarmer HUD", ref isOpen, flags))
+            bool hudBegun = ImGui.Begin("SimuFarmer HUD", ref isOpen, flags);
+
+            try
             {
-                Settings.ShowHud.Value = isOpen;
-                var hudPos = ImGui.GetWindowPos();
-                var hudSize = ImGui.GetWindowSize();
-                BotInput.HudRect = new SharpDX.RectangleF(hudPos.X, hudPos.Y, hudSize.X, hudSize.Y);
-
-                var statusColor = Settings.IsRunning.Value ? new System.Numerics.Vector4(0.2f, 1f, 0.2f, 1f) : new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f);
-                ImGui.TextColored(statusColor, Settings.IsRunning.Value ? "[RUNNING] Farming Active" : "[PAUSED] Press F9 to Start");
-
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Hide HUD"))
+                if (hudBegun)
                 {
-                    Settings.ShowHud.Value = false;
-                }
+                    Settings.ShowHud.Value = isOpen;
+                    var hudPos = ImGui.GetWindowPos();
+                    var hudSize = ImGui.GetWindowSize();
+                    BotInput.HudRect = new SharpDX.RectangleF(hudPos.X, hudPos.Y, hudSize.X, hudSize.Y);
 
-                ImGui.Separator();
-                var arenaName = _arenaManager.CurrentProfile?.Name ?? (GameController.Area.CurrentArea.IsHideout ? "Hideout" : "Unknown");
-                ImGui.Text($"Location: {arenaName}");
-
-                ImGui.Text($"Wave: {_state.CurrentWave} / 15");
-                ImGui.SameLine();
-                if (ImGui.SmallButton(" - ") && _state.CurrentWave > 0) _state.CurrentWave--;
-                ImGui.SameLine();
-                if (ImGui.SmallButton(" + ") && _state.CurrentWave < 15) _state.CurrentWave++;
-
-                ImGui.Text($"Phase: {_state.Phase}");
-                ImGui.TextWrapped($"Status: {_state.StatusText}");
-
-                ImGui.Separator();
-                ImGui.Text($"Loot Picked: {_state.TotalLootPicked} (This run: {_state.WaveLootPicked})");
-                ImGui.Text($"Runs Completed: {_state.RunsCompleted}");
-
-                ImGui.Separator();
-                // Circuit & Position Calibration Controls
-                if (_arenaManager.IsInSimulacrumArea && _arenaManager.CurrentProfile != null)
-                {
-                    int wpCount = _arenaManager.CurrentProfile.CircuitWaypoints.Count;
-                    ImGui.Text($"Recorded Waypoints: {wpCount}");
-
-                    if (!_arenaManager.IsRecording)
-                    {
-                        if (ImGui.Button("Record Circuit Loop"))
-                        {
-                            _arenaManager.StartRecording();
-                        }
-                    }
-                    else
-                    {
-                        if (ImGui.Button("Save & Stop Recording"))
-                        {
-                            _arenaManager.StopRecording();
-                        }
-                    }
+                    var statusColor = Settings.IsRunning.Value ? new System.Numerics.Vector4(0.2f, 1f, 0.2f, 1f) : new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f);
+                    ImGui.TextColored(statusColor, Settings.IsRunning.Value ? "[RUNNING] Farming Active" : "[PAUSED] Press F9 to Start");
 
                     ImGui.SameLine();
-                    if (ImGui.Button("Clear Waypoints"))
+                    if (ImGui.SmallButton("Hide HUD"))
                     {
-                        _arenaManager.ClearCircuit();
+                        Settings.ShowHud.Value = false;
                     }
 
-                    // Calibrate Loot Center & Monolith
-                    if (GameController.Player != null)
-                    {
-                        if (ImGui.Button("Set Loot Center (Here)"))
-                        {
-                            _arenaManager.SetCurrentAsLootCenter(GameController.Player.GridPosNum);
-                        }
-                        ImGui.SameLine();
-                        if (ImGui.Button("Set Monolith (Here)"))
-                        {
-                            _arenaManager.SetCurrentAsMonolith(GameController.Player.GridPosNum);
-                        }
-                    }
-                }
+                    ImGui.Separator();
+                    var arenaName = _arenaManager.CurrentProfile?.Name ?? (GameController.Area.CurrentArea.IsHideout ? "Hideout" : "Unknown");
+                    ImGui.Text($"Location: {arenaName}");
 
-                // In-Game Live Log Console
-                ImGui.Separator();
-                ImGui.Text("Recent Event Logs:");
-                if (ImGui.BeginChild("LogConsole", new Vector2(0, 130)))
-                {
-                    var logs = SimuLogger.GetRecentLogs();
-                    foreach (var l in logs)
+                    ImGui.Text($"Wave: {_state.CurrentWave} / 15");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton(" - ") && _state.CurrentWave > 0) _state.CurrentWave--;
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton(" + ") && _state.CurrentWave < 15) _state.CurrentWave++;
+
+                    ImGui.Text($"Phase: {_state.Phase}");
+                    ImGui.TextWrapped($"Status: {_state.StatusText}");
+
+                    ImGui.Separator();
+                    ImGui.Text($"Loot Picked: {_state.TotalLootPicked} (This run: {_state.WaveLootPicked})");
+                    ImGui.Text($"Runs Completed: {_state.RunsCompleted}");
+
+                    ImGui.Separator();
+                    // Circuit & Position Calibration Controls
+                    if (_arenaManager.IsInSimulacrumArea && _arenaManager.CurrentProfile != null)
                     {
-                        if (l.Contains("[LOOT]"))
-                            ImGui.TextColored(new System.Numerics.Vector4(1f, 0.85f, 0.2f, 1f), l);
-                        else if (l.Contains("[FSM]"))
-                            ImGui.TextColored(new System.Numerics.Vector4(0.35f, 0.75f, 1f, 1f), l);
-                        else if (l.Contains("[SAFETY]"))
-                            ImGui.TextColored(new System.Numerics.Vector4(1f, 0.3f, 0.3f, 1f), l);
-                        else if (l.Contains("[ARENA]"))
-                            ImGui.TextColored(new System.Numerics.Vector4(0.5f, 1f, 0.5f, 1f), l);
+                        int wpCount = _arenaManager.CurrentProfile.CircuitWaypoints.Count;
+                        ImGui.Text($"Recorded Waypoints: {wpCount}");
+
+                        if (!_arenaManager.IsRecording)
+                        {
+                            if (ImGui.Button("Record Circuit Loop"))
+                            {
+                                _arenaManager.StartRecording();
+                            }
+                        }
                         else
-                            ImGui.TextUnformatted(l);
+                        {
+                            if (ImGui.Button("Save & Stop Recording"))
+                            {
+                                _arenaManager.StopRecording();
+                            }
+                        }
+
+                        ImGui.SameLine();
+                        if (ImGui.Button("Clear Waypoints"))
+                        {
+                            _arenaManager.ClearCircuit();
+                        }
+
+                        // Calibrate Loot Center & Monolith
+                        if (GameController.Player != null)
+                        {
+                            if (ImGui.Button("Set Loot Center (Here)"))
+                            {
+                                _arenaManager.SetCurrentAsLootCenter(GameController.Player.GridPosNum);
+                            }
+                            ImGui.SameLine();
+                            if (ImGui.Button("Set Monolith (Here)"))
+                            {
+                                _arenaManager.SetCurrentAsMonolith(GameController.Player.GridPosNum);
+                            }
+                        }
                     }
-                    if (ImGui.GetScrollY() >= ImGui.GetScrollMaxY())
-                        ImGui.SetScrollHereY(1.0f);
+
+                    // In-Game Live Log Console
+                    ImGui.Separator();
+                    ImGui.Text("Recent Event Logs:");
+                    bool childBegun = ImGui.BeginChild("LogConsole", new Vector2(0, 130));
+                    try
+                    {
+                        if (childBegun)
+                        {
+                            var logs = SimuLogger.GetRecentLogs();
+                            foreach (var l in logs)
+                            {
+                                if (l.Contains("[LOOT]"))
+                                    ImGui.TextColored(new System.Numerics.Vector4(1f, 0.85f, 0.2f, 1f), l);
+                                else if (l.Contains("[FSM]"))
+                                    ImGui.TextColored(new System.Numerics.Vector4(0.35f, 0.75f, 1f, 1f), l);
+                                else if (l.Contains("[SAFETY]"))
+                                    ImGui.TextColored(new System.Numerics.Vector4(1f, 0.3f, 0.3f, 1f), l);
+                                else if (l.Contains("[ARENA]"))
+                                    ImGui.TextColored(new System.Numerics.Vector4(0.5f, 1f, 0.5f, 1f), l);
+                                else
+                                    ImGui.TextUnformatted(l);
+                            }
+                            if (ImGui.GetScrollY() >= ImGui.GetScrollMaxY())
+                                ImGui.SetScrollHereY(1.0f);
+                        }
+                    }
+                    finally
+                    {
+                        ImGui.EndChild();
+                    }
                 }
-                ImGui.EndChild();
             }
-            ImGui.End();
+            finally
+            {
+                ImGui.End();
+            }
 
             if (!isOpen)
             {

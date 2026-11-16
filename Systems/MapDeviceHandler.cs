@@ -287,7 +287,7 @@ namespace SimuFarmer.Systems
                      e.RenderName?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true) &&
                     e.RenderName != "Map Device" &&
                     e.Path?.Contains("MappingDevice") != true)
-                .OrderBy(e => e.DistancePlayer)
+                .OrderBy(e => e.GridPosNum.Y) // Top-most / back portal is never occluded by the player or front rim
                 .ToList();
 
             if (portals.Count == 0)
@@ -296,15 +296,15 @@ namespace SimuFarmer.Systems
                 return;
             }
 
-            var nearestPortal = portals.First();
+            var targetPortal = portals.First();
             var player = gc.Player;
             if (player == null) return;
 
-            var dist = Vector2.Distance(player.GridPosNum, nearestPortal.GridPosNum);
+            var dist = Vector2.Distance(player.GridPosNum, targetPortal.GridPosNum);
             if (dist > _settings.InteractRadius.Value)
             {
                 state.StatusText = $"Walking to portal (dist: {dist:F0})";
-                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, player.GridPosNum, nearestPortal.GridPosNum, 16f);
+                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, player.GridPosNum, targetPortal.GridPosNum, 16f);
                 var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
                 var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
                 var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(player.GridPosNum));
@@ -318,7 +318,7 @@ namespace SimuFarmer.Systems
                 state.StatusText = "Clicking Portal to enter Simulacrum";
                 _lastActionTime = DateTime.Now;
 
-                // Priority A: Try clicking on-ground label first
+                // Priority A: Try clicking on-ground label first (checks portal entity, simulacrum, and arena names)
                 bool clicked = false;
                 try
                 {
@@ -327,10 +327,9 @@ namespace SimuFarmer.Systems
                     {
                         var pLabel = labels.FirstOrDefault(l =>
                             l.Label != null && l.Label.IsVisible &&
-                            (l.Entity?.Id == nearestPortal.Id ||
+                            (l.Entity?.Id == targetPortal.Id ||
                              portals.Any(p => p.Id == l.Entity?.Id) ||
-                             l.Label.Text?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true ||
-                             l.Label.Text?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true));
+                             IsPortalLabelText(l.Label.Text)));
 
                         if (pLabel?.Label != null)
                         {
@@ -347,17 +346,41 @@ namespace SimuFarmer.Systems
                 }
                 catch { }
 
-                // Priority B: Click portal entity directly
+                // Priority B: Click portal entity directly (elevated into middle of vortex)
                 if (!clicked)
                 {
-                    SimuLogger.Log($"[MAP] Clicking portal entity directly ({nearestPortal.RenderName ?? nearestPortal.Metadata})");
-                    await BotInput.ClickEntity(gc, nearestPortal);
+                    var center = targetPortal.BoundsCenterPosNum;
+                    if (center == Vector3.Zero) center = targetPortal.PosNum;
+                    if (center == Vector3.Zero) center = gc.IngameState.Data.ToWorldWithTerrainHeight(targetPortal.GridPosNum);
+                    var elevated = center + new Vector3(0, 0, 40f);
+                    var screen = gc.IngameState.Camera.WorldToScreen(elevated);
+                    var screenPos = BotInput.ClampToWindow(new Vector2(screen.X, screen.Y));
+                    if (BotInput.IsSafeFromUI(screenPos))
+                    {
+                        SimuLogger.Log($"[MAP] Clicking portal entity directly at ({screenPos.X:F0}, {screenPos.Y:F0})");
+                        await BotInput.ClickAt(screenPos);
+                    }
                 }
 
                 // Stay in EnteringPortal: if loading starts, AreaChange() transitions to ArenaInit.
                 // If loading hasn't started after delay, TickEnterPortal retries automatically.
                 await Task.Delay(1000);
             }
+        }
+
+        private static bool IsPortalLabelText(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            return text.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Portal", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Lunacy", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Bridge", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Syndrome", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Hysteriagate", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Oriath", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Encampment", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Delusion", StringComparison.OrdinalIgnoreCase) ||
+                   text.Contains("Watch", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsSimulacrumItem(string? path)

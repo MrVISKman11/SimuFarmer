@@ -53,16 +53,23 @@ namespace SimuFarmer.Systems
             state.TransitionTo(SimPhase.StartingWave, "Aura active -> Ready to start wave");
         }
 
+        private DateTime _lastWalkClick = DateTime.MinValue;
+
         public async Task TickStartingWave(GameController gc, SimuState state)
         {
             var monolith = _arenaManager.MonolithEntity;
+            var stash = _arenaManager.StashEntity;
             var player = gc.Player;
             if (player == null) return;
 
-            // 1. Check if wave is already active
-            if (monolith != null && monolith.IsValid && IsMonolithActive(monolith, out int currentWave))
+            // 1. Check if wave is genuinely active (e.g. re-entering zone after death)
+            // A wave is only active when the stash is locked (untargetable) AND monolith is not targetable.
+            bool waveGenuinelyActive = stash != null && stash.IsValid && !stash.IsTargetable &&
+                                      (monolith == null || !monolith.IsValid || !monolith.IsTargetable);
+
+            if (waveGenuinelyActive)
             {
-                OnWaveStarted(gc, state, currentWave);
+                OnWaveStarted(gc, state, state.CurrentWave);
                 return;
             }
 
@@ -91,17 +98,22 @@ namespace SimuFarmer.Systems
                     }
                 }
 
-                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, playerGrid, targetGrid.Value, 16f);
-                var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
-                var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
-                var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(playerGrid));
-                var moveVec = BotInput.GetSafeMovementClick(new Vector2(charScreen.X, charScreen.Y), new Vector2(screenTarget.X, screenTarget.Y));
-                await BotInput.ClickAt(moveVec);
+                // Throttle movement clicks to avoid click-spam stutter
+                if ((DateTime.Now - _lastWalkClick).TotalMilliseconds >= 250)
+                {
+                    var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, playerGrid, targetGrid.Value, 16f);
+                    var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
+                    var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
+                    var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(playerGrid));
+                    var moveVec = BotInput.GetSafeMovementClick(new Vector2(charScreen.X, charScreen.Y), new Vector2(screenTarget.X, screenTarget.Y));
+                    await BotInput.ClickAt(moveVec);
+                    _lastWalkClick = DateTime.Now;
+                }
                 return;
             }
 
             // 3. IN RANGE (<= 18 units): Now and only now, click the Afflictionator to start the wave
-            if ((DateTime.Now - _lastMonolithClick).TotalMilliseconds >= 1000)
+            if ((DateTime.Now - _lastMonolithClick).TotalMilliseconds >= 1200)
             {
                 state.StatusText = "Clicking Afflictionator to start wave";
                 SimuLogger.Log($"[START] In range of Afflictionator (dist {pDist:F1}) -> Clicking to start wave");
@@ -110,11 +122,13 @@ namespace SimuFarmer.Systems
                 // Priority A: Click visible label if on screen
                 if (TryGetMonolithLabelPos(gc, monolith, out var labelPos))
                 {
+                    SimuLogger.Log($"[START] Clicking Afflictionator label at ({labelPos.X:F0}, {labelPos.Y:F0})");
                     await BotInput.ClickAt(labelPos);
                 }
                 // Priority B: Click entity bounds directly
                 else if (monolith != null && monolith.IsValid)
                 {
+                    SimuLogger.Log("[START] Clicking Afflictionator entity bounds");
                     await BotInput.ClickEntity(gc, monolith);
                 }
                 // Priority C: Click ground coordinate directly
@@ -125,11 +139,18 @@ namespace SimuFarmer.Systems
                     await BotInput.ClickAt(BotInput.ClampToWindow(new Vector2(screenTarget.X, screenTarget.Y)));
                 }
 
-                // Check if already active or poll for activation
-                await Task.Delay(400);
-                if (monolith != null && monolith.IsValid && IsMonolithActive(monolith, out int activeWave))
+                // Check if wave activation succeeded (monolith or stash becomes untargetable)
+                await Task.Delay(500);
+                bool nowStarted = (stash != null && stash.IsValid && !stash.IsTargetable) ||
+                                  (monolith != null && (!monolith.IsValid || !monolith.IsTargetable));
+
+                if (nowStarted)
                 {
-                    OnWaveStarted(gc, state, activeWave);
+                    OnWaveStarted(gc, state, state.CurrentWave);
+                }
+                else
+                {
+                    SimuLogger.Log("[START] Click sent, waiting for wave to start...");
                 }
             }
         }
@@ -200,9 +221,11 @@ namespace SimuFarmer.Systems
                 if (labelElement != null)
                 {
                     var mLabel = labelElement.FirstOrDefault(l =>
+                        l.Label != null && l.Label.IsVisible &&
                         ((monolith != null && l.Entity?.Id == monolith.Id) ||
-                         l.Entity?.Metadata?.Contains("Objects/Afflictionator") == true) &&
-                        l.Label != null && l.Label.IsVisible);
+                         l.Entity?.Metadata?.Contains("Objects/Afflictionator") == true ||
+                         l.Label.Text?.Contains("Strangely Familiar Entity", StringComparison.OrdinalIgnoreCase) == true ||
+                         l.Label.Text?.Contains("Afflictionator", StringComparison.OrdinalIgnoreCase) == true));
 
                     if (mLabel?.Label != null)
                     {
@@ -296,25 +319,20 @@ namespace SimuFarmer.Systems
 
         private bool IsWaveComplete(GameController gc, SimuState state)
         {
-            // Give wave at least 6 seconds before checking completion (so initial wave start state changes settle)
-            if ((DateTime.Now - _waveActiveStartTime).TotalSeconds < 6.0)
+            // Give wave at least 8 seconds before checking completion (initial spawn delay)
+            if ((DateTime.Now - _waveActiveStartTime).TotalSeconds < 8.0)
                 return false;
 
-            // Primary: Stash became targetable
+            // Primary: Stash became targetable (monsters all dead)
             if (_arenaManager.StashEntity != null && _arenaManager.StashEntity.IsValid && _arenaManager.StashEntity.IsTargetable)
             {
                 return true;
             }
 
-            // Fallback: Monolith StateMachine active == 0
-            var monolith = _arenaManager.MonolithEntity;
-            if (monolith != null && monolith.IsValid)
+            // Secondary: Monolith became targetable again
+            if (_arenaManager.MonolithEntity != null && _arenaManager.MonolithEntity.IsValid && _arenaManager.MonolithEntity.IsTargetable)
             {
-                if (monolith.TryGetComponent<StateMachine>(out var sm))
-                {
-                    var activeVal = sm.States.FirstOrDefault(s => s.Name == "active")?.Value ?? 0;
-                    if (activeVal == 0) return true;
-                }
+                return true;
             }
 
             return false;

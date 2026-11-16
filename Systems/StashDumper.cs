@@ -85,18 +85,30 @@ namespace SimuFarmer.Systems
             var cursor = gc.IngameState?.IngameUi?.Cursor;
             if (cursor != null && cursor.ChildCount > 0)
             {
-                state.StatusText = "Item stuck on cursor -> Placing into stash";
-                SimuLogger.Log("[STASH] Detected item held on cursor! Depositing into open stash tab.");
+                state.StatusText = "Item stuck on cursor -> Placing safely back in inventory";
+                SimuLogger.Log("[STASH] Detected item held on cursor! Safely placing back into player inventory.");
 
-                // Click into the open stash tab area to drop/deposit the held item
-                var stashRect = stashEl.GetClientRect();
-                var depositPos = new Vector2(stashRect.X + stashRect.Width * 0.4f, stashRect.Y + stashRect.Height * 0.4f);
-                await BotInput.ClickAt(depositPos);
-                await Task.Delay(250);
-
-                // If still holding after click, tap Escape to cancel/place back in inventory
-                if (gc.IngameState?.IngameUi?.Cursor?.ChildCount > 0)
+                // If any popup confirmation is up (e.g. "Destroy item?"), cancel it immediately with Escape!
+                if (gc.IngameState?.IngameUi?.PopUpWindow?.IsVisible == true)
                 {
+                    SimuLogger.Log("[SAFETY] Dismissed Destroy Item popup with Escape!");
+                    await BotInput.TapKey(Keys.Escape);
+                    await Task.Delay(200);
+                }
+
+                // Place item safely back into player inventory (NEVER click into world or stash border)
+                var invPanel = gc.IngameState?.IngameUi?.InventoryPanel;
+                if (invPanel != null && invPanel.IsVisible)
+                {
+                    var invRect = invPanel.GetClientRect();
+                    // Click bottom-right area of player inventory
+                    var safeInvPos = new Vector2(invRect.Right - invRect.Width * 0.15f, invRect.Bottom - invRect.Height * 0.2f);
+                    await BotInput.ClickAt(safeInvPos);
+                    await Task.Delay(250);
+                }
+                else
+                {
+                    // Fallback: tap Escape to clear held item
                     await BotInput.TapKey(Keys.Escape);
                     await Task.Delay(200);
                 }

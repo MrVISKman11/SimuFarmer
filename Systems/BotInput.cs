@@ -322,50 +322,62 @@ namespace SimuFarmer.Systems
 
         public static async Task CtrlClickAt(Vector2 screenPos)
         {
+            screenPos = ClampToWindow(screenPos);
             int settle = RandSettle();
             int hold = RandHold();
-            GateFor(settle + hold + 160);
+            GateFor(settle + hold + 220);
 
-            Input.KeyDown(Keys.LControlKey);
+            // Step 1: Move mouse to item center FIRST with NO keys held
+            await MoveCursorTo(screenPos);
+            await Task.Delay(settle + 30);
+
+            // Step 2: Now press Control and hold it
             Input.KeyDown(Keys.ControlKey);
+            Input.KeyDown(Keys.LControlKey);
             await Task.Delay(40);
 
-            await MoveCursorTo(screenPos);
-            await Task.Delay(settle + 25);
-
+            // Step 3: Click while Control is firmly held
             Input.LeftDown();
-            await Task.Delay(hold + 25);
+            await Task.Delay(hold + 30);
             Input.LeftUp();
+            await Task.Delay(40);
 
-            await Task.Delay(50);
+            // Step 4: Release Control
             Input.KeyUp(Keys.ControlKey);
             Input.KeyUp(Keys.LControlKey);
+            await Task.Delay(30);
         }
 
         public static async Task CtrlShiftClickAt(Vector2 screenPos)
         {
+            screenPos = ClampToWindow(screenPos);
             int settle = RandSettle();
             int hold = RandHold();
-            GateFor(settle + hold + 180);
+            GateFor(settle + hold + 240);
 
-            Input.KeyDown(Keys.LControlKey);
+            // Step 1: Move mouse to item center FIRST with NO keys held
+            await MoveCursorTo(screenPos);
+            await Task.Delay(settle + 30);
+
+            // Step 2: Now press Control + Shift
             Input.KeyDown(Keys.ControlKey);
-            Input.KeyDown(Keys.LShiftKey);
+            Input.KeyDown(Keys.LControlKey);
             Input.KeyDown(Keys.ShiftKey);
+            Input.KeyDown(Keys.LShiftKey);
             await Task.Delay(45);
 
-            await MoveCursorTo(screenPos);
-            await Task.Delay(settle + 25);
-
+            // Step 3: Click while modifiers are held
             Input.LeftDown();
             await Task.Delay(hold + 30);
             Input.LeftUp();
+            await Task.Delay(40);
 
-            await Task.Delay(55);
+            // Step 4: Release modifiers
             Input.KeyUp(Keys.ShiftKey);
             Input.KeyUp(Keys.LShiftKey);
             Input.KeyUp(Keys.ControlKey);
             Input.KeyUp(Keys.LControlKey);
+            await Task.Delay(30);
         }
 
         // Watchdog tick (releases keys held > 60s)
