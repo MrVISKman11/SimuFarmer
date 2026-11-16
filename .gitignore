@@ -1,0 +1,15 @@
+# Build outputs
+bin/
+obj/
+*.dll.old_*
+
+# Visual Studio / Rider / VSCode
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log
