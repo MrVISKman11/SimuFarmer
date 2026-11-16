@@ -200,10 +200,16 @@ namespace SimuFarmer.Systems
                 await BotInput.ClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                 _lastActionTime = DateTime.Now;
 
-                // Close open UI panels (Atlas / Inventory) so portals are completely visible and clickable
+                // Map Device automatically closes upon activation in PoE.
                 await Task.Delay(400);
-                await BotInput.TapKey(Keys.Escape);
-                await Task.Delay(200);
+
+                // If player inventory is still open, close it safely with Space (NEVER blind Escape)
+                var inv = gc.IngameState?.IngameUi?.InventoryPanel;
+                if (inv != null && inv.IsVisible)
+                {
+                    await BotInput.TapKey(Keys.Space);
+                    await Task.Delay(200);
+                }
 
                 state.TransitionTo(SimPhase.EnteringPortal, "Map Device activated -> Waiting for portals");
                 return true;
@@ -268,7 +274,7 @@ namespace SimuFarmer.Systems
                 if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 300)
                 {
                     state.StatusText = "Closing UI panels to clear view of portals";
-                    await BotInput.TapKey(Keys.Escape);
+                    await BotInput.TapKey(Keys.Space); // Space safely closes panels without opening Escape menu
                     _lastActionTime = DateTime.Now;
                 }
                 return;

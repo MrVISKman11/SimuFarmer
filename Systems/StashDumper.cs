@@ -122,7 +122,7 @@ namespace SimuFarmer.Systems
             if (invItems == null || invItems.Count == 0)
             {
                 state.StatusText = "Inventory empty -> Closing stash";
-                await CloseStashAndFinish(state);
+                await CloseStashAndFinish(gc, state);
                 return true;
             }
 
@@ -139,7 +139,7 @@ namespace SimuFarmer.Systems
             {
                 // Only protected Simulacrums remain
                 state.StatusText = "All loot dumped (Simulacrums protected) -> Closing stash";
-                await CloseStashAndFinish(state);
+                await CloseStashAndFinish(gc, state);
                 return true;
             }
 
@@ -172,10 +172,19 @@ namespace SimuFarmer.Systems
                    path.EndsWith("Simulacrum", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static async Task CloseStashAndFinish(SimuState state)
+        private static async Task CloseStashAndFinish(GameController gc, SimuState state)
         {
-            await BotInput.TapKey(Keys.Escape);
-            await Task.Delay(300);
+            var stash = gc.IngameState?.IngameUi?.StashElement;
+            if (stash != null && stash.IsVisible)
+            {
+                await BotInput.TapKey(Keys.Space); // Space safely closes panels without opening Escape menu
+                await Task.Delay(200);
+                if (gc.IngameState?.IngameUi?.StashElement?.IsVisible == true)
+                {
+                    await BotInput.TapKey(Keys.Escape);
+                    await Task.Delay(200);
+                }
+            }
             state.TransitionTo(SimPhase.NavigatingToMapDevice, "Stash dumped -> Moving to Map Device");
         }
     }

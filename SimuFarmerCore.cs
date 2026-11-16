@@ -27,6 +27,7 @@ namespace SimuFarmer
 
         private DateTime _lastAreaCheck = DateTime.MinValue;
         private DateTime _lastPortalKeyTime = DateTime.MinValue;
+        private DateTime _lastFullscreenDismiss = DateTime.MinValue;
 
         public override bool Initialise()
         {
@@ -104,6 +105,19 @@ namespace SimuFarmer
 
             BotInput.TickWatchdog();
             BotInput.WindowRect = GameController.Window.GetWindowRectangle();
+
+            // Safety watchdog: If a fullscreen panel (e.g. MTX Shop or Passive Tree) is open, dismiss it with Escape
+            var ingameUi = GameController.IngameState?.IngameUi;
+            if (ingameUi?.FullscreenPanels?.Any(p => p.IsVisible) == true)
+            {
+                if ((DateTime.Now - _lastFullscreenDismiss).TotalMilliseconds >= 600)
+                {
+                    SimuLogger.Log("[SAFETY] Fullscreen panel (e.g. MTX Shop) detected open! Dismissing with Escape.");
+                    _ = BotInput.TapKey(System.Windows.Forms.Keys.Escape);
+                    _lastFullscreenDismiss = DateTime.Now;
+                }
+                return null;
+            }
 
             // Wait if input gate is busy
             if (!BotInput.CanAct && _state.Phase != SimPhase.WaveActive)
