@@ -34,6 +34,29 @@ namespace SimuFarmer.Systems
 
             var atlas = gc.IngameState?.IngameUi?.Atlas;
 
+            // 0. If map portals are already open in Hideout, enter them directly!
+            if (atlas?.IsVisible != true)
+            {
+                var existingPortals = gc.EntityListWrapper.OnlyValidEntities
+                    .Where(e => e.IsTargetable &&
+                        (e.Type == EntityType.TownPortal ||
+                         e.Type == EntityType.AreaTransition ||
+                         e.Path?.Contains("Town_Portals", StringComparison.OrdinalIgnoreCase) == true ||
+                         e.Metadata?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
+                         e.RenderName?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
+                         e.RenderName?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true) &&
+                        e.RenderName != "Map Device" &&
+                        e.Path?.Contains("MappingDevice") != true)
+                    .ToList();
+
+                if (existingPortals.Count >= 1)
+                {
+                    SimuLogger.Log($"[MAP] Found {existingPortals.Count} open portals already in Hideout -> Entering portal directly");
+                    state.TransitionTo(SimPhase.EnteringPortal, "Portals already open -> Entering portal");
+                    return true;
+                }
+            }
+
             // 1. If Map Device is not open, find and open it
             if (atlas?.IsVisible != true)
             {
@@ -177,6 +200,11 @@ namespace SimuFarmer.Systems
                 await BotInput.ClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                 _lastActionTime = DateTime.Now;
 
+                // Close open UI panels (Atlas / Inventory) so portals are completely visible and clickable
+                await Task.Delay(400);
+                await BotInput.TapKey(Keys.Escape);
+                await Task.Delay(200);
+
                 state.TransitionTo(SimPhase.EnteringPortal, "Map Device activated -> Waiting for portals");
                 return true;
             }
@@ -224,14 +252,47 @@ namespace SimuFarmer.Systems
 
         public async Task TickEnterPortal(GameController gc, SimuState state)
         {
+            if (!gc.Area.CurrentArea.IsHideout)
+            {
+                // Already transitioned out of hideout
+                return;
+            }
+
+            // 1. Ensure blocking UI panels (Atlas / Inventory / Stash) are closed before attempting to click portal
+            var atlasOpen = gc.IngameState?.IngameUi?.Atlas?.IsVisible == true;
+            var invOpen = gc.IngameState?.IngameUi?.InventoryPanel?.IsVisible == true;
+            var stashOpen = gc.IngameState?.IngameUi?.StashElement?.IsVisible == true;
+
+            if (atlasOpen || invOpen || stashOpen)
+            {
+                if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 300)
+                {
+                    state.StatusText = "Closing UI panels to clear view of portals";
+                    await BotInput.TapKey(Keys.Escape);
+                    _lastActionTime = DateTime.Now;
+                }
+                return;
+            }
+
+            // 2. Query targetable map portals in hideout
             var portals = gc.EntityListWrapper.OnlyValidEntities
-                .Where(e => (e.Type == EntityType.TownPortal || e.Metadata?.Contains("Portal") == true) && e.IsTargetable)
+                .Where(e => e.IsTargetable &&
+                    (e.Type == EntityType.TownPortal ||
+                     e.Type == EntityType.AreaTransition ||
+                     e.Path?.Contains("Town_Portals", StringComparison.OrdinalIgnoreCase) == true ||
+                     e.Path?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
+                     e.Metadata?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
+                     e.Metadata?.Contains("AreaTransition", StringComparison.OrdinalIgnoreCase) == true ||
+                     e.RenderName?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
+                     e.RenderName?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true) &&
+                    e.RenderName != "Map Device" &&
+                    e.Path?.Contains("MappingDevice") != true)
                 .OrderBy(e => e.DistancePlayer)
                 .ToList();
 
             if (portals.Count == 0)
             {
-                state.StatusText = "Waiting for portals to appear...";
+                state.StatusText = "Waiting for Map Device portals to open...";
                 return;
             }
 
@@ -243,7 +304,8 @@ namespace SimuFarmer.Systems
             if (dist > _settings.InteractRadius.Value)
             {
                 state.StatusText = $"Walking to portal (dist: {dist:F0})";
-                var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(nearestPortal.GridPosNum);
+                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, player.GridPosNum, nearestPortal.GridPosNum, 16f);
+                var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
                 var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
                 var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(player.GridPosNum));
                 var moveVec = BotInput.GetSafeMovementClick(new Vector2(charScreen.X, charScreen.Y), new Vector2(screenTarget.X, screenTarget.Y));
@@ -251,12 +313,50 @@ namespace SimuFarmer.Systems
                 return;
             }
 
-            if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 600)
+            if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 800)
             {
                 state.StatusText = "Clicking Portal to enter Simulacrum";
-                await BotInput.ClickEntity(gc, nearestPortal);
                 _lastActionTime = DateTime.Now;
-                state.TransitionTo(SimPhase.LoadingZone, "Entering portal -> Loading instance");
+
+                // Priority A: Try clicking on-ground label first
+                bool clicked = false;
+                try
+                {
+                    var labels = gc.IngameState?.IngameUi?.ItemsOnGroundLabelElement?.VisibleGroundItemLabels;
+                    if (labels != null)
+                    {
+                        var pLabel = labels.FirstOrDefault(l =>
+                            l.Label != null && l.Label.IsVisible &&
+                            (l.Entity?.Id == nearestPortal.Id ||
+                             portals.Any(p => p.Id == l.Entity?.Id) ||
+                             l.Label.Text?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true ||
+                             l.Label.Text?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true));
+
+                        if (pLabel?.Label != null)
+                        {
+                            var rect = pLabel.Label.GetClientRect();
+                            var clickPos = new Vector2(rect.Center.X, rect.Center.Y);
+                            if (BotInput.IsSafeFromUI(clickPos))
+                            {
+                                SimuLogger.Log($"[MAP] Clicking portal label '{pLabel.Label.Text}' at ({clickPos.X:F0}, {clickPos.Y:F0})");
+                                await BotInput.ClickAt(clickPos);
+                                clicked = true;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                // Priority B: Click portal entity directly
+                if (!clicked)
+                {
+                    SimuLogger.Log($"[MAP] Clicking portal entity directly ({nearestPortal.RenderName ?? nearestPortal.Metadata})");
+                    await BotInput.ClickEntity(gc, nearestPortal);
+                }
+
+                // Stay in EnteringPortal: if loading starts, AreaChange() transitions to ArenaInit.
+                // If loading hasn't started after delay, TickEnterPortal retries automatically.
+                await Task.Delay(1000);
             }
         }
 

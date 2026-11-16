@@ -192,6 +192,27 @@ namespace SimuFarmer
                 case SimPhase.Wave15Exit:
                     _ = HandleWave15Exit();
                     break;
+
+                case SimPhase.LoadingZone:
+                    // Safety watchdog: if stuck in LoadingZone for > 3.0 seconds, recover based on current area
+                    if ((DateTime.Now - _state.PhaseEnteredAt).TotalSeconds >= 3.0)
+                    {
+                        if (GameController.Area.CurrentArea.IsHideout)
+                        {
+                            SimuLogger.Log("[RECOVERY] LoadingZone timed out in Hideout -> Re-entering portal");
+                            _state.TransitionTo(SimPhase.EnteringPortal, "Retrying portal entry");
+                        }
+                        else if (_arenaManager.IsInSimulacrumArea)
+                        {
+                            SimuLogger.Log("[RECOVERY] LoadingZone timed out in Arena -> Retrying exit");
+                            _state.TransitionTo(SimPhase.Wave15Exit, "Retrying exit portal");
+                        }
+                        else
+                        {
+                            _state.TransitionTo(SimPhase.Idle, "LoadingZone timeout in unknown area");
+                        }
+                    }
+                    break;
             }
 
             return null;
@@ -284,7 +305,7 @@ namespace SimuFarmer
             }
 
             _state.RunsCompleted++;
-            _state.TransitionTo(SimPhase.LoadingZone, "Portaling to Hideout");
+            await Task.Delay(1000);
         }
 
         public override void Render()
