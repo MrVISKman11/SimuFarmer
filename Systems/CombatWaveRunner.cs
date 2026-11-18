@@ -16,6 +16,7 @@ namespace SimuFarmer.Systems
         private readonly UnstuckHandler _unstuckHandler;
         private DateTime _waveActiveStartTime = DateTime.MinValue;
         private DateTime _lastMonolithClick = DateTime.MinValue;
+        private bool _lootZoneReached = false;
 
         public CombatWaveRunner(ArenaManager arenaManager, Settings settings, UnstuckHandler unstuckHandler)
         {
@@ -26,30 +27,22 @@ namespace SimuFarmer.Systems
 
         public async Task TickArenaInit(GameController gc, SimuState state)
         {
-            state.StatusText = "Arena Init: Breaking grace period & activating aura";
+            state.StatusText = "Arena Init: Activating aura";
 
-            // Take a step to break grace period
             var player = gc.Player;
             if (player == null) return;
 
-            var playerGrid = player.GridPosNum;
-            var targetGrid = playerGrid + new Vector2(5, 5);
-            var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(targetGrid);
-            var screenPos = gc.IngameState.Camera.WorldToScreen(world3D);
-            var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(playerGrid));
-            var moveVec = BotInput.GetSafeMovementClick(new Vector2(charScreen.X, charScreen.Y), new Vector2(screenPos.X, screenPos.Y));
-
-            await BotInput.ClickAt(moveVec);
-            await Task.Delay(250);
-
-            // Press Aura key if not done this instance
+            // Press Aura key if not done this instance (in PoE, activating an aura immediately breaks grace period)
+            // NEVER perform blind ground clicks at spawn: the player spawns directly on the entrance portal!
             if (!state.AuraActivatedThisRun)
             {
                 await BotInput.TapKey(_settings.AuraKey.Value.Key);
                 state.AuraActivatedThisRun = true;
-                await Task.Delay(200);
+                await Task.Delay(250);
             }
 
+            _lootZoneReached = false;
+            _unstuckHandler.Reset(player.GridPosNum);
             state.TransitionTo(SimPhase.StartingWave, "Aura active -> Ready to start wave");
         }
 
@@ -69,30 +62,74 @@ namespace SimuFarmer.Systems
 
             if (waveGenuinelyActive)
             {
-                OnWaveStarted(gc, state, state.CurrentWave);
+                OnWaveStarted(gc, state);
                 return;
             }
 
-            var targetGrid = monolith?.GridPosNum ?? _arenaManager.CurrentProfile?.MonolithPosition;
-            if (!targetGrid.HasValue)
+            var monolithGrid = monolith?.GridPosNum ?? _arenaManager.CurrentProfile?.MonolithPosition;
+            if (!monolithGrid.HasValue)
             {
                 state.StatusText = "Searching for Afflictionator monolith...";
                 return;
             }
 
             var playerGrid = player.GridPosNum;
-            float pDist = Vector2.Distance(playerGrid, targetGrid.Value);
+            float distToMonolith = Vector2.Distance(playerGrid, monolithGrid.Value);
 
-            // 2. PRIMARY REQUIREMENT: If distant (> 18 units), WALK to the monolith first!
-            // Never attempt to click the Afflictionator label/box from afar because PoE will not move the character.
-            if (pDist > 18f)
+            // Determine navigation target: In Hysteriagate, navigate to Loot Center milestone first, then to Monolith!
+            bool isHysteriagate = _arenaManager.CurrentProfile?.AreaKey?.Contains("Hysteria", StringComparison.OrdinalIgnoreCase) == true;
+            var lootCenter = _arenaManager.CurrentProfile?.LootCenterPosition?.ToVector2();
+
+            Vector2 targetGrid = monolithGrid.Value;
+            bool goingToLootCenter = false;
+
+            if (isHysteriagate && lootCenter.HasValue)
             {
-                state.StatusText = $"Walking to Afflictionator (dist: {pDist:F0})";
+                float distToLootCenter = Vector2.Distance(playerGrid, lootCenter.Value);
+
+                // If player is already within 25 units of monolith, we're inside the arena -> proceed directly to monolith
+                if (distToMonolith <= 25f)
+                {
+                    _lootZoneReached = true;
+                }
+                // If player has arrived at Loot Center milestone (within 20 units), transition to monolith target
+                else if (distToLootCenter <= 20f)
+                {
+                    if (!_lootZoneReached)
+                    {
+                        _lootZoneReached = true;
+                        SimuLogger.Log($"[START] Arrived at Loot Center milestone (dist {distToLootCenter:F1}) -> Proceeding to Afflictionator");
+                    }
+                }
+
+                // If Loot Center milestone not yet reached, steer towards Loot Center!
+                if (!_lootZoneReached)
+                {
+                    targetGrid = lootCenter.Value;
+                    goingToLootCenter = true;
+                }
+            }
+
+            float pDist = Vector2.Distance(playerGrid, targetGrid);
+
+            // 2. PRIMARY REQUIREMENT: If distant (> 18 units), WALK to target first!
+            // Never attempt to click the Afflictionator label/box from afar because PoE will not move the character.
+            if (pDist > 18f || goingToLootCenter)
+            {
+                if (goingToLootCenter)
+                {
+                    state.StatusText = $"[Hysteriagate] Navigating to Loot Zone first (dist: {pDist:F0})";
+                }
+                else
+                {
+                    state.StatusText = $"Walking to Afflictionator (dist: {distToMonolith:F0})";
+                }
 
                 // Check if stuck trying to reach the Afflictionator (e.g. wall/balustrade blocking)
-                if (_unstuckHandler.IsStuck(playerGrid, 2.5f, 0.5))
+                // Require at least 1.5s in StartingWave before allowing unstuck jump, preventing instant spawn jumps near entrance portal
+                if ((DateTime.Now - state.PhaseEnteredAt).TotalSeconds >= 1.5 && _unstuckHandler.IsStuck(playerGrid, 2.5f, 0.7))
                 {
-                    if (await _unstuckHandler.TryJumpTowards(gc, _settings, playerGrid, targetGrid.Value, resumeCombatHold: false))
+                    if (await _unstuckHandler.TryJumpTowards(gc, _settings, playerGrid, targetGrid, resumeCombatHold: false))
                     {
                         return;
                     }
@@ -101,26 +138,30 @@ namespace SimuFarmer.Systems
                 // Throttle movement clicks to avoid click-spam stutter
                 if ((DateTime.Now - _lastWalkClick).TotalMilliseconds >= 250)
                 {
-                    var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, playerGrid, targetGrid.Value, 16f);
+                    var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, playerGrid, targetGrid, 16f);
                     var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
                     var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
                     var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(playerGrid));
                     var moveVec = BotInput.GetSafeMovementClick(new Vector2(charScreen.X, charScreen.Y), new Vector2(screenTarget.X, screenTarget.Y));
+
+                    // Deflect moveVec away from entrance portal and portal labels if near spawn
+                    moveVec = DeflectFromEntrancePortal(gc, moveVec);
+
                     await BotInput.ClickAt(moveVec);
                     _lastWalkClick = DateTime.Now;
                 }
                 return;
             }
 
-            // 3. IN RANGE (<= 18 units): Now and only now, click the Afflictionator to start the wave
+            // 3. IN RANGE (<= 18 units from Monolith): Now and only now, click the Afflictionator to start the wave
             if ((DateTime.Now - _lastMonolithClick).TotalMilliseconds >= 1200)
             {
                 state.StatusText = "Clicking Afflictionator to start wave";
-                SimuLogger.Log($"[START] In range of Afflictionator (dist {pDist:F1}) -> Clicking to start wave");
+                SimuLogger.Log($"[START] In range of Afflictionator (dist {distToMonolith:F1}) -> Clicking to start wave");
                 _lastMonolithClick = DateTime.Now;
 
                 // Priority A: Click visible label if on screen
-                if (TryGetMonolithLabelPos(gc, monolith, out var labelPos))
+                if (TryGetMonolithLabelPos(gc, monolith, state, out var labelPos))
                 {
                     SimuLogger.Log($"[START] Clicking Afflictionator label at ({labelPos.X:F0}, {labelPos.Y:F0})");
                     await BotInput.ClickAt(labelPos);
@@ -134,7 +175,7 @@ namespace SimuFarmer.Systems
                 // Priority C: Click ground coordinate directly
                 else
                 {
-                    var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(targetGrid.Value);
+                    var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(monolithGrid.Value);
                     var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
                     await BotInput.ClickAt(BotInput.ClampToWindow(new Vector2(screenTarget.X, screenTarget.Y)));
                 }
@@ -146,7 +187,7 @@ namespace SimuFarmer.Systems
 
                 if (nowStarted)
                 {
-                    OnWaveStarted(gc, state, state.CurrentWave);
+                    OnWaveStarted(gc, state);
                 }
                 else
                 {
@@ -190,7 +231,7 @@ namespace SimuFarmer.Systems
             return dir.Length() > 16f ? playerGrid + Vector2.Normalize(dir) * 16f : targetGrid;
         }
 
-        private bool TryGetMonolithLabelPos(GameController gc, Entity? monolith, out Vector2 clickPos)
+        private bool TryGetMonolithLabelPos(GameController gc, Entity? monolith, SimuState? state, out Vector2 clickPos)
         {
             clickPos = Vector2.Zero;
             try
@@ -206,6 +247,12 @@ namespace SimuFarmer.Systems
 
                     if (mLabel?.Label != null)
                     {
+                        if (state != null)
+                        {
+                            var w = TryParseWaveNumber(mLabel.Label);
+                            if (w > 0) state.CurrentWave = w;
+                        }
+
                         var rect = mLabel.Label.GetClientRect();
                         var center = new Vector2(rect.Center.X, rect.Center.Y);
                         if (BotInput.IsSafeFromUI(center))
@@ -229,6 +276,12 @@ namespace SimuFarmer.Systems
 
                     if (mLabel?.Label != null)
                     {
+                        if (state != null)
+                        {
+                            var w = TryParseWaveNumber(mLabel.Label);
+                            if (w > 0) state.CurrentWave = w;
+                        }
+
                         var rect = mLabel.Label.GetClientRect();
                         var center = new Vector2(rect.Center.X, rect.Center.Y);
                         if (BotInput.IsSafeFromUI(center))
@@ -241,6 +294,23 @@ namespace SimuFarmer.Systems
             }
             catch { }
             return false;
+        }
+
+        public static int TryParseWaveNumber(ExileCore.PoEMemory.Element? element)
+        {
+            if (element == null) return 0;
+            if (!string.IsNullOrEmpty(element.Text))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(element.Text, @"Wave\s+(\d+)");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int w))
+                    return w;
+            }
+            foreach (var child in element.Children)
+            {
+                int w = TryParseWaveNumber(child);
+                if (w > 0) return w;
+            }
+            return 0;
         }
 
         public void TickWaveActive(GameController gc, SimuState state)
@@ -338,9 +408,17 @@ namespace SimuFarmer.Systems
             return false;
         }
 
-        public void OnWaveStarted(GameController gc, SimuState state, int waveFromMonolith)
+        public void OnWaveStarted(GameController gc, SimuState state, int waveOverride = 0)
         {
-            state.CurrentWave = waveFromMonolith > 0 ? waveFromMonolith : state.CurrentWave + 1;
+            if (waveOverride > 0)
+            {
+                state.CurrentWave = waveOverride;
+            }
+            else if (state.CurrentWave < 1)
+            {
+                state.CurrentWave = 1;
+            }
+            _lootZoneReached = false;
             state.WaveStartedAt = DateTime.Now;
             _waveActiveStartTime = DateTime.Now;
             _arenaManager.ResetCircuitIndex(gc, gc?.Player?.GridPosNum);
@@ -356,6 +434,51 @@ namespace SimuFarmer.Systems
 
             state.SettleStartedAt = DateTime.Now;
             state.TransitionTo(SimPhase.WaveEndSettle, $"Wave {state.CurrentWave} ended -> Moving to Loot Center");
+        }
+
+        public static Vector2 DeflectFromEntrancePortal(GameController gc, Vector2 targetPos)
+        {
+            try
+            {
+                // 1. Check portal entities near targetPos
+                var portal = gc.EntityListWrapper?.OnlyValidEntities?
+                    .FirstOrDefault(e => e.Metadata?.Contains("Metadata/MiscellaneousObjects/Portal") == true ||
+                                         e.Metadata?.Contains("Objects/Portal") == true);
+                if (portal != null)
+                {
+                    var p3D = gc.IngameState.Data.ToWorldWithTerrainHeight(portal.GridPosNum);
+                    var pScreen = gc.IngameState.Camera.WorldToScreen(p3D);
+                    var pVec = new Vector2(pScreen.X, pScreen.Y);
+                    if (Vector2.Distance(targetPos, pVec) < 110f)
+                    {
+                        var away = targetPos - pVec;
+                        if (away.LengthSquared() < 1f) away = new Vector2(0, -1);
+                        targetPos = pVec + Vector2.Normalize(away) * 140f;
+                    }
+                }
+
+                // 2. Check visible portal ground labels (e.g. "Hideout", "Portal")
+                var labels = gc.IngameState?.IngameUi?.ItemsOnGroundLabelElement?.VisibleGroundItemLabels;
+                if (labels != null)
+                {
+                    foreach (var l in labels)
+                    {
+                        if (l.Label != null && l.Label.IsVisible &&
+                            (l.Label.Text?.Contains("Hideout", StringComparison.OrdinalIgnoreCase) == true ||
+                             l.Label.Text?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true))
+                        {
+                            var rect = l.Label.GetClientRect();
+                            if (rect.Contains(targetPos.X, targetPos.Y))
+                            {
+                                targetPos = new Vector2(rect.Center.X, rect.Top - 35f);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return BotInput.ClampToWindow(targetPos);
         }
 
         private static bool IsMonolithActive(Entity monolith, out int wave)

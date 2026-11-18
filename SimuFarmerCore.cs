@@ -27,6 +27,8 @@ namespace SimuFarmer
 
         private DateTime _lastAreaCheck = DateTime.MinValue;
         private DateTime _lastPortalKeyTime = DateTime.MinValue;
+        private DateTime _lastExitClickTime = DateTime.MinValue;
+        private bool _waitingForExitLoad = false;
         private DateTime _lastFullscreenDismiss = DateTime.MinValue;
 
         public override bool Initialise()
@@ -49,10 +51,18 @@ namespace SimuFarmer
         {
             BotInput.ReleaseAllKeys();
             _unstuckHandler?.Reset(Vector2.Zero);
+            _waitingForExitLoad = false;
+            _mapDeviceHandler?.ResetPortalState();
             _arenaManager.UpdateCurrentArena(GameController);
 
             if (GameController.Area.CurrentArea.IsHideout)
             {
+                if (_state.Phase == SimPhase.Wave15Exit || _state.CurrentWave >= 15)
+                {
+                    _state.RunsCompleted++;
+                    SimuLogger.Log($"[RUN] Simulacrum #{_state.RunsCompleted} complete! (Loot this run: {_state.WaveLootPicked}, Total: {_state.TotalLootPicked})");
+                }
+                _state.ResetArenaSession();
                 _state.TransitionTo(SimPhase.InHideout, "In Hideout - Ready to dump stash & start device");
             }
             else if (_arenaManager.IsInSimulacrumArea)
@@ -105,19 +115,6 @@ namespace SimuFarmer
 
             BotInput.TickWatchdog();
             BotInput.WindowRect = GameController.Window.GetWindowRectangle();
-
-            // Safety watchdog: If a fullscreen panel (e.g. MTX Shop or Passive Tree) is open, dismiss it with Escape
-            var ingameUi = GameController.IngameState?.IngameUi;
-            if (ingameUi?.FullscreenPanels?.Any(p => p.IsVisible) == true)
-            {
-                if ((DateTime.Now - _lastFullscreenDismiss).TotalMilliseconds >= 600)
-                {
-                    SimuLogger.Log("[SAFETY] Fullscreen panel (e.g. MTX Shop) detected open! Dismissing with Escape.");
-                    _ = BotInput.TapKey(System.Windows.Forms.Keys.Escape);
-                    _lastFullscreenDismiss = DateTime.Now;
-                }
-                return null;
-            }
 
             // Wait if input gate is busy
             if (!BotInput.CanAct && _state.Phase != SimPhase.WaveActive)
@@ -285,9 +282,25 @@ namespace SimuFarmer
                 return;
             }
 
+            // Single-click & wait: Never spam clicks while waiting for loading screen!
+            if (_waitingForExitLoad)
+            {
+                double elapsed = (DateTime.Now - _lastExitClickTime).TotalSeconds;
+                if (elapsed < 3.5)
+                {
+                    _state.StatusText = $"Exit portal clicked -> Waiting for Hideout load ({3.5 - elapsed:F1}s)...";
+                    return;
+                }
+                SimuLogger.Log($"[EXIT] Portal click timed out after {elapsed:F1}s without loading screen -> Retrying");
+                _waitingForExitLoad = false;
+            }
+
             // In range: try clicking on-screen label first, or entity
             _state.StatusText = "Clicking Portal to return to Hideout";
-            SimuLogger.Log("[EXIT] Clicking Portal to return to Hideout");
+            SimuLogger.Log("[EXIT] Clicking Portal to return to Hideout -> Waiting up to 3.5s for loading screen");
+
+            _lastExitClickTime = DateTime.Now;
+            _waitingForExitLoad = true;
 
             bool clicked = false;
             try
@@ -311,9 +324,6 @@ namespace SimuFarmer
             {
                 await BotInput.ClickEntity(GameController, nearbyPortal);
             }
-
-            _state.RunsCompleted++;
-            await Task.Delay(1000);
         }
 
         public override void Render()

@@ -105,7 +105,7 @@ namespace SimuFarmer.Systems
             return start + Vector2.Normalize(dir) * stepDist;
         }
 
-        public static List<Vector2> FindPath(GameController gc, Vector2 gridStart, Vector2 gridEnd, int maxNodes = 3000)
+        public static List<Vector2> FindPath(GameController gc, Vector2 gridStart, Vector2 gridEnd, int maxNodes = 8000)
         {
             var pfGrid = gc.IngameState?.Data?.RawPathfindingData;
             if (pfGrid == null || pfGrid.Length == 0)
@@ -138,11 +138,20 @@ namespace SimuFarmer.Systems
             open.Enqueue((sx, sy), Heuristic(sx, sy, gx, gy));
 
             int explored = 0;
+            (int x, int y) bestNode = (sx, sy);
+            float bestHeuristic = Heuristic(sx, sy, gx, gy);
 
             while (open.Count > 0 && explored < maxNodes)
             {
                 var (cx, cy) = open.Dequeue();
                 explored++;
+
+                float h = Heuristic(cx, cy, gx, gy);
+                if (h < bestHeuristic)
+                {
+                    bestHeuristic = h;
+                    bestNode = (cx, cy);
+                }
 
                 if (cx == gx && cy == gy)
                 {
@@ -174,6 +183,14 @@ namespace SimuFarmer.Systems
                         open.Enqueue(key, tentativeG + Heuristic(nx, ny, gx, gy));
                     }
                 }
+            }
+
+            // If node budget was exhausted in a long winding corridor, return path to the closest explored node
+            // rather than a blind straight line into a wall
+            if (cameFrom.ContainsKey(bestNode) && bestNode != (sx, sy))
+            {
+                var partialPath = ReconstructPath(cameFrom, sx, sy, bestNode.x, bestNode.y);
+                return SmoothPath(pfGrid, partialPath);
             }
 
             return new List<Vector2> { gridStart, gridEnd };

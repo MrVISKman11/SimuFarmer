@@ -207,8 +207,9 @@ namespace SimuFarmer.Systems
             // Quiet window passed with zero items -> start next wave
             if (state.CurrentWave < 15)
             {
-                SimuLogger.Log($"[LOOT] Wave {state.CurrentWave} clear confirmed -> Next wave");
-                state.TransitionTo(SimPhase.StartingWave, $"Wave {state.CurrentWave} loot cleared -> Starting next wave");
+                state.CurrentWave++;
+                SimuLogger.Log($"[LOOT] Wave {state.CurrentWave - 1} clear confirmed -> Next wave {state.CurrentWave}");
+                state.TransitionTo(SimPhase.StartingWave, $"Wave {state.CurrentWave - 1} loot cleared -> Starting wave {state.CurrentWave}");
             }
             else
             {

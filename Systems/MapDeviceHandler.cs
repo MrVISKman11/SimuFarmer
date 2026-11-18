@@ -16,8 +16,18 @@ namespace SimuFarmer.Systems
     {
         private readonly Settings _settings;
         private DateTime _lastActionTime = DateTime.MinValue;
+        private DateTime _lastWalkLog = DateTime.MinValue;
+        private DateTime _lastPortalLog = DateTime.MinValue;
+        private DateTime _lastPortalClickTime = DateTime.MinValue;
+        private bool _waitingForPortalLoad = false;
         private static readonly int[] ActivateButtonPath = { 7, 0, 3 };
         private const string FullSimulacrumPath = "CurrencyAfflictionFragment";
+
+        public void ResetPortalState()
+        {
+            _waitingForPortalLoad = false;
+            _lastPortalClickTime = DateTime.MinValue;
+        }
 
         public MapDeviceHandler(Settings settings)
         {
@@ -34,29 +44,6 @@ namespace SimuFarmer.Systems
 
             var atlas = gc.IngameState?.IngameUi?.Atlas;
 
-            // 0. If map portals are already open in Hideout, enter them directly!
-            if (atlas?.IsVisible != true)
-            {
-                var existingPortals = gc.EntityListWrapper.OnlyValidEntities
-                    .Where(e => e.IsTargetable &&
-                        (e.Type == EntityType.TownPortal ||
-                         e.Type == EntityType.AreaTransition ||
-                         e.Path?.Contains("Town_Portals", StringComparison.OrdinalIgnoreCase) == true ||
-                         e.Metadata?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
-                         e.RenderName?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
-                         e.RenderName?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true) &&
-                        e.RenderName != "Map Device" &&
-                        e.Path?.Contains("MappingDevice") != true)
-                    .ToList();
-
-                if (existingPortals.Count >= 1)
-                {
-                    SimuLogger.Log($"[MAP] Found {existingPortals.Count} open portals already in Hideout -> Entering portal directly");
-                    state.TransitionTo(SimPhase.EnteringPortal, "Portals already open -> Entering portal");
-                    return true;
-                }
-            }
-
             // 1. If Map Device is not open, find and open it
             if (atlas?.IsVisible != true)
             {
@@ -66,6 +53,11 @@ namespace SimuFarmer.Systems
                 if (deviceEntity == null)
                 {
                     state.StatusText = "Map Device not found in hideout";
+                    if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 3000)
+                    {
+                        SimuLogger.Log("[MAP] ERROR: Map Device entity not found in hideout!");
+                        _lastActionTime = DateTime.Now;
+                    }
                     return false;
                 }
 
@@ -76,6 +68,12 @@ namespace SimuFarmer.Systems
                 if (dist > _settings.InteractRadius.Value)
                 {
                     state.StatusText = $"Walking to Map Device (dist: {dist:F0})";
+
+                    if ((DateTime.Now - _lastWalkLog).TotalMilliseconds >= 2000)
+                    {
+                        SimuLogger.Log($"[MAP] Walking to Map Device (dist: {dist:F0})");
+                        _lastWalkLog = DateTime.Now;
+                    }
 
                     // Step closer in safe increments to avoid clicking on portals around device
                     var dir = Vector2.Normalize(deviceEntity.GridPosNum - player.GridPosNum);
@@ -111,10 +109,15 @@ namespace SimuFarmer.Systems
                     bool labelClicked = false;
                     if (labels != null)
                     {
-                        var dLabel = labels.FirstOrDefault(l => l.Entity?.Id == deviceEntity.Id && l.Label != null && l.Label.IsVisible);
+                        var dLabel = labels.FirstOrDefault(l =>
+                            l.Label != null && l.Label.IsVisible &&
+                            (l.Entity?.Id == deviceEntity.Id ||
+                             l.Label.Text?.Contains("Map Device", StringComparison.OrdinalIgnoreCase) == true));
+
                         if (dLabel?.Label != null)
                         {
                             var rect = dLabel.Label.GetClientRect();
+                            SimuLogger.Log($"[MAP] Clicking Map Device label at ({rect.Center.X:F0}, {rect.Center.Y:F0})");
                             await BotInput.ClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                             labelClicked = true;
                         }
@@ -127,6 +130,7 @@ namespace SimuFarmer.Systems
                         if (center == Vector3.Zero) center = deviceEntity.PosNum;
                         var elevated = center + new Vector3(0, 0, 50f);
                         var screen = gc.IngameState.Camera.WorldToScreen(elevated);
+                        SimuLogger.Log($"[MAP] Clicking Map Device entity apparatus directly at ({screen.X:F0}, {screen.Y:F0})");
                         await BotInput.ClickAt(new Vector2(screen.X, screen.Y));
                     }
 
@@ -148,6 +152,7 @@ namespace SimuFarmer.Systems
                     if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 500)
                     {
                         state.StatusText = "Right-clicking Simulacrum in Atlas Inventory";
+                        SimuLogger.Log("[MAP] Found Simulacrum in Atlas Inventory -> Right-clicking to insert");
                         var rect = atlasSimu.GetClientRect();
                         await BotInput.RightClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                         _lastActionTime = DateTime.Now;
@@ -163,6 +168,7 @@ namespace SimuFarmer.Systems
                     if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 400)
                     {
                         state.StatusText = "Opening Player Inventory ('I') to insert Simulacrum";
+                        SimuLogger.Log("[MAP] Atlas is open -> Pressing 'I' to open Player Inventory");
                         await BotInput.TapKey(System.Windows.Forms.Keys.I);
                         _lastActionTime = DateTime.Now;
                         await Task.Delay(300);
@@ -178,6 +184,11 @@ namespace SimuFarmer.Systems
                 if (simuItem == null)
                 {
                     state.StatusText = "ERROR: No Simulacrum found in Atlas Inventory or Player Inventory!";
+                    if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 2000)
+                    {
+                        SimuLogger.Log($"[MAP] ERROR: No Simulacrum item found in player inventory! (Scanned {invItems?.Count ?? 0} items)");
+                        _lastActionTime = DateTime.Now;
+                    }
                     return false;
                 }
 
@@ -185,6 +196,7 @@ namespace SimuFarmer.Systems
                 {
                     state.StatusText = "Right-clicking Simulacrum from Player Inventory";
                     var rect = simuItem.GetClientRect();
+                    SimuLogger.Log($"[MAP] Found Simulacrum in player inventory -> Right-clicking at ({rect.Center.X:F0}, {rect.Center.Y:F0})");
                     await BotInput.RightClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                     _lastActionTime = DateTime.Now;
                     await Task.Delay(600);
@@ -197,6 +209,7 @@ namespace SimuFarmer.Systems
             {
                 state.StatusText = "Clicking ACTIVATE on Map Device";
                 var rect = activateBtn.GetClientRect();
+                SimuLogger.Log($"[MAP] ACTIVATE button ready -> Clicking ACTIVATE at ({rect.Center.X:F0}, {rect.Center.Y:F0})");
                 await BotInput.ClickAt(new Vector2(rect.Center.X, rect.Center.Y));
                 _lastActionTime = DateTime.Now;
 
@@ -211,6 +224,7 @@ namespace SimuFarmer.Systems
                     await Task.Delay(200);
                 }
 
+                ResetPortalState();
                 state.TransitionTo(SimPhase.EnteringPortal, "Map Device activated -> Waiting for portals");
                 return true;
             }
@@ -266,21 +280,51 @@ namespace SimuFarmer.Systems
 
             // 1. Ensure blocking UI panels (Atlas / Inventory / Stash) are closed before attempting to click portal
             var atlasOpen = gc.IngameState?.IngameUi?.Atlas?.IsVisible == true;
-            var invOpen = gc.IngameState?.IngameUi?.InventoryPanel?.IsVisible == true;
-            var stashOpen = gc.IngameState?.IngameUi?.StashElement?.IsVisible == true;
-
-            if (atlasOpen || invOpen || stashOpen)
+            if (atlasOpen)
             {
                 if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 300)
                 {
-                    state.StatusText = "Closing UI panels to clear view of portals";
-                    await BotInput.TapKey(Keys.Space); // Space safely closes panels without opening Escape menu
+                    state.StatusText = "Closing Map Device panel to clear view of portals";
+                    SimuLogger.Log("[MAP] Map Device panel is open in EnteringPortal -> Pressing Escape to dismiss");
+                    await BotInput.TapKey(Keys.Escape);
                     _lastActionTime = DateTime.Now;
+                    _waitingForPortalLoad = false;
                 }
                 return;
             }
 
-            // 2. Query targetable map portals in hideout
+            var invOpen = gc.IngameState?.IngameUi?.InventoryPanel?.IsVisible == true;
+            var stashOpen = gc.IngameState?.IngameUi?.StashElement?.IsVisible == true;
+
+            if (invOpen || stashOpen)
+            {
+                if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 300)
+                {
+                    state.StatusText = "Closing UI panels to clear view of portals";
+                    await BotInput.TapKey(Keys.Space); // Space safely closes inventory/stash
+                    _lastActionTime = DateTime.Now;
+                    _waitingForPortalLoad = false;
+                }
+                return;
+            }
+
+            // 2. Locate Map Device entity in hideout so we never click it or confuse it with portals
+            var deviceEntity = gc.EntityListWrapper.OnlyValidEntities
+                .FirstOrDefault(e => e.IsTargetable && (
+                    e.RenderName?.Contains("Map Device", StringComparison.OrdinalIgnoreCase) == true ||
+                    e.Path?.Contains("MapDevice", StringComparison.OrdinalIgnoreCase) == true ||
+                    e.Path?.Contains("MappingDevice", StringComparison.OrdinalIgnoreCase) == true));
+
+            Vector2? devScreenPos = null;
+            if (deviceEntity != null)
+            {
+                var devCenter = deviceEntity.BoundsCenterPosNum != Vector3.Zero ? deviceEntity.BoundsCenterPosNum : deviceEntity.PosNum;
+                if (devCenter == Vector3.Zero) devCenter = gc.IngameState.Data.ToWorldWithTerrainHeight(deviceEntity.GridPosNum);
+                var dScr = gc.IngameState.Camera.WorldToScreen(devCenter);
+                devScreenPos = new Vector2(dScr.X, dScr.Y);
+            }
+
+            // 3. Query targetable map portals in hideout (strictly excluding the Map Device apparatus)
             var portals = gc.EntityListWrapper.OnlyValidEntities
                 .Where(e => e.IsTargetable &&
                     (e.Type == EntityType.TownPortal ||
@@ -291,26 +335,57 @@ namespace SimuFarmer.Systems
                      e.Metadata?.Contains("AreaTransition", StringComparison.OrdinalIgnoreCase) == true ||
                      e.RenderName?.Contains("Portal", StringComparison.OrdinalIgnoreCase) == true ||
                      e.RenderName?.Contains("Simulacrum", StringComparison.OrdinalIgnoreCase) == true) &&
-                    e.RenderName != "Map Device" &&
-                    e.Path?.Contains("MappingDevice") != true)
-                .OrderBy(e => e.GridPosNum.Y) // Top-most / back portal is never occluded by the player or front rim
+                    (deviceEntity == null || e.Id != deviceEntity.Id) &&
+                    e.RenderName?.Contains("Map Device", StringComparison.OrdinalIgnoreCase) != true &&
+                    e.Path?.Contains("MapDevice", StringComparison.OrdinalIgnoreCase) != true &&
+                    e.Path?.Contains("MappingDevice", StringComparison.OrdinalIgnoreCase) != true &&
+                    (deviceEntity == null || (Vector2.Distance(e.GridPosNum, deviceEntity.GridPosNum) >= 6f && Vector2.Distance(e.GridPosNum, deviceEntity.GridPosNum) <= 35f)))
                 .ToList();
 
             if (portals.Count == 0)
             {
                 state.StatusText = "Waiting for Map Device portals to open...";
+                if ((DateTime.Now - _lastPortalLog).TotalMilliseconds >= 2000)
+                {
+                    SimuLogger.Log("[MAP] Waiting for Map Device portals to open...");
+                    _lastPortalLog = DateTime.Now;
+                }
                 return;
             }
 
-            var targetPortal = portals.First();
             var player = gc.Player;
             if (player == null) return;
 
+            // 4. Select the best portal:
+            // Prefer portals that have strong lateral clearance on screen from the Map Device apparatus (>= 150px)
+            // (e.g. side portals like East/West which never overlap the central dais in foreground or background)
+            var candidatePortals = portals
+                .Select(p => {
+                    var pCenter = p.BoundsCenterPosNum != Vector3.Zero ? p.BoundsCenterPosNum : p.PosNum;
+                    if (pCenter == Vector3.Zero) pCenter = gc.IngameState.Data.ToWorldWithTerrainHeight(p.GridPosNum);
+                    var pScr = gc.IngameState.Camera.WorldToScreen(pCenter);
+                    var scrVec = new Vector2(pScr.X, pScr.Y);
+                    float devDist = devScreenPos.HasValue ? Vector2.Distance(scrVec, devScreenPos.Value) : 999f;
+                    float lateralDist = devScreenPos.HasValue ? Math.Abs(scrVec.X - devScreenPos.Value.X) : 999f;
+                    float playerDist = Vector2.Distance(player.GridPosNum, p.GridPosNum);
+                    return new { Portal = p, ScreenPos = scrVec, DevDist = devDist, LateralDist = lateralDist, PlayerDist = playerDist };
+                })
+                .OrderByDescending(x => x.LateralDist >= 150f && x.DevDist >= 180f) // Strongly prefer clear side portals
+                .ThenByDescending(x => x.DevDist)
+                .ThenBy(x => x.PlayerDist)
+                .ToList();
+
+            var bestCandidate = candidatePortals.FirstOrDefault();
+            if (bestCandidate == null) return;
+
+            var targetPortal = bestCandidate.Portal;
             var dist = Vector2.Distance(player.GridPosNum, targetPortal.GridPosNum);
-            if (dist > _settings.InteractRadius.Value)
+
+            // Require walking to within 10 units of the portal first so the character is standing right in front of it!
+            if (dist > 10f)
             {
                 state.StatusText = $"Walking to portal (dist: {dist:F0})";
-                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, player.GridPosNum, targetPortal.GridPosNum, 16f);
+                var stepGrid = TerrainPathfinder.GetNextStepTowards(gc, player.GridPosNum, targetPortal.GridPosNum, 14f);
                 var world3D = gc.IngameState.Data.ToWorldWithTerrainHeight(stepGrid);
                 var screenTarget = gc.IngameState.Camera.WorldToScreen(world3D);
                 var charScreen = gc.IngameState.Camera.WorldToScreen(gc.IngameState.Data.ToWorldWithTerrainHeight(player.GridPosNum));
@@ -319,59 +394,67 @@ namespace SimuFarmer.Systems
                 return;
             }
 
-            if ((DateTime.Now - _lastActionTime).TotalMilliseconds >= 800)
+            // 5. Single-click & wait: Never spam clicks!
+            // Click once and give the engine up to 3.5s to trigger the loading screen.
+            if (_waitingForPortalLoad)
             {
-                state.StatusText = "Clicking Portal to enter Simulacrum";
-                _lastActionTime = DateTime.Now;
-
-                // Priority A: Try clicking on-ground label first (checks portal entity, simulacrum, and arena names)
-                bool clicked = false;
-                try
+                double elapsed = (DateTime.Now - _lastPortalClickTime).TotalSeconds;
+                if (elapsed < 3.5)
                 {
-                    var labels = gc.IngameState?.IngameUi?.ItemsOnGroundLabelElement?.VisibleGroundItemLabels;
-                    if (labels != null)
-                    {
-                        var pLabel = labels.FirstOrDefault(l =>
-                            l.Label != null && l.Label.IsVisible &&
-                            (l.Entity?.Id == targetPortal.Id ||
-                             portals.Any(p => p.Id == l.Entity?.Id) ||
-                             IsPortalLabelText(l.Label.Text)));
+                    state.StatusText = $"Portal clicked -> Waiting for loading screen ({3.5 - elapsed:F1}s)...";
+                    return;
+                }
 
-                        if (pLabel?.Label != null)
+                SimuLogger.Log($"[MAP] Portal click timed out after {elapsed:F1}s without loading screen -> Retrying precise click");
+                _waitingForPortalLoad = false;
+            }
+
+            state.StatusText = "Clicking Portal to enter Simulacrum (waiting for load)";
+
+            // Determine click coordinate
+            Vector2 clickPos = Vector2.Zero;
+            bool foundLabel = false;
+
+            try
+            {
+                var labels = gc.IngameState?.IngameUi?.ItemsOnGroundLabelElement?.VisibleGroundItemLabels;
+                if (labels != null)
+                {
+                    var pLabel = labels.FirstOrDefault(l =>
+                        l.Label != null && l.Label.IsVisible &&
+                        (l.Entity?.Id == targetPortal.Id || portals.Any(p => p.Id == l.Entity?.Id) || IsPortalLabelText(l.Label.Text)));
+
+                    if (pLabel?.Label != null)
+                    {
+                        var rect = pLabel.Label.GetClientRect();
+                        var lblCenter = new Vector2(rect.Center.X, rect.Center.Y);
+                        float dDist = devScreenPos.HasValue ? Vector2.Distance(lblCenter, devScreenPos.Value) : 999f;
+                        if (dDist > 80f && BotInput.IsSafeFromUI(lblCenter))
                         {
-                            var rect = pLabel.Label.GetClientRect();
-                            var clickPos = new Vector2(rect.Center.X, rect.Center.Y);
-                            if (BotInput.IsSafeFromUI(clickPos))
-                            {
-                                SimuLogger.Log($"[MAP] Clicking portal label '{pLabel.Label.Text}' at ({clickPos.X:F0}, {clickPos.Y:F0})");
-                                await BotInput.ClickAt(clickPos);
-                                clicked = true;
-                            }
+                            clickPos = lblCenter;
+                            foundLabel = true;
+                            SimuLogger.Log($"[MAP] Precise click: targeting portal label '{pLabel.Label.Text}' at ({clickPos.X:F0}, {clickPos.Y:F0})");
                         }
                     }
                 }
-                catch { }
-
-                // Priority B: Click portal entity directly (elevated into middle of vortex)
-                if (!clicked)
-                {
-                    var center = targetPortal.BoundsCenterPosNum;
-                    if (center == Vector3.Zero) center = targetPortal.PosNum;
-                    if (center == Vector3.Zero) center = gc.IngameState.Data.ToWorldWithTerrainHeight(targetPortal.GridPosNum);
-                    var elevated = center + new Vector3(0, 0, 40f);
-                    var screen = gc.IngameState.Camera.WorldToScreen(elevated);
-                    var screenPos = BotInput.ClampToWindow(new Vector2(screen.X, screen.Y));
-                    if (BotInput.IsSafeFromUI(screenPos))
-                    {
-                        SimuLogger.Log($"[MAP] Clicking portal entity directly at ({screenPos.X:F0}, {screenPos.Y:F0})");
-                        await BotInput.ClickAt(screenPos);
-                    }
-                }
-
-                // Stay in EnteringPortal: if loading starts, AreaChange() transitions to ArenaInit.
-                // If loading hasn't started after delay, TickEnterPortal retries automatically.
-                await Task.Delay(1000);
             }
+            catch { }
+
+            if (!foundLabel)
+            {
+                // Target portal center directly at entity PosNum (no excessive vertical offset)
+                var pCenter = targetPortal.BoundsCenterPosNum != Vector3.Zero ? targetPortal.BoundsCenterPosNum : targetPortal.PosNum;
+                if (pCenter == Vector3.Zero) pCenter = gc.IngameState.Data.ToWorldWithTerrainHeight(targetPortal.GridPosNum);
+                var scr = gc.IngameState.Camera.WorldToScreen(pCenter);
+                clickPos = BotInput.ClampToWindow(new Vector2(scr.X, scr.Y));
+                SimuLogger.Log($"[MAP] Precise click: targeting portal entity at ({clickPos.X:F0}, {clickPos.Y:F0}) (DevDist: {bestCandidate.DevDist:F0}px, Lateral: {bestCandidate.LateralDist:F0}px)");
+            }
+
+            _lastPortalClickTime = DateTime.Now;
+            _waitingForPortalLoad = true;
+            _lastActionTime = DateTime.Now;
+
+            await BotInput.ClickAt(clickPos);
         }
 
         private static bool IsPortalLabelText(string? text)
